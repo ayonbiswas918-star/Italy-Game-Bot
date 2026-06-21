@@ -146,6 +146,56 @@ function botChoosePowerCard(gs, pos, difficulty){
 }
 
 // BOT PLAY CARD LOGIC
+// Bot decides whether to reveal trump (returns true if should reveal)
+// Called when bot has no lead suit cards and trump is not yet revealed
+function botShouldRevealTrump(gs, pos, difficulty){
+  if(!canReveal(gs, pos, gs.hands[pos])) return false;
+
+  const trick=gs.currentTrick;
+  const myTeam=teamOf(pos);
+
+  // Check if partner is currently winning the trick
+  const winnerPos=trickWin(trick, gs.leadSuit, gs.trumpSuit, gs.trumpRevealed);
+  const partnerWinning=winnerPos!==null&&teamOf(winnerPos)===myTeam&&winnerPos!==pos;
+
+  if(difficulty==='simple'){
+    // Simple bots never reveal trump (existing behaviour kept intentionally simple)
+    return false;
+  }
+
+  if(difficulty==='medium'){
+    // Reveal trump if partner is NOT winning and we have no way to win otherwise
+    if(partnerWinning) return false; // partner is winning, no need to reveal
+    return true; // reveal to try to win the trick
+  }
+
+  // Smart / hard: reveal trump only if it's worth it
+  if(partnerWinning) return false; // don't waste trump reveal if partner winning
+
+  // Check if we actually have trump cards to play after revealing
+  const powerCard=gs.powerCard?.card;
+  const trumpSuit=powerCard?.suit;
+  if(!trumpSuit) return false;
+  const myTrumpCards=gs.hands[pos].filter(c=>c.suit===trumpSuit);
+
+  // Only reveal if we have trump cards to play
+  if(myTrumpCards.length===0) return false;
+
+  // Check how strong the current winning card is
+  const winCard=trick.find(t=>t.position===winnerPos)?.card;
+  if(!winCard) return false;
+
+  // If winning card is an Ace or King, definitely reveal trump to beat it
+  if(RANK_VAL[winCard.rank]>=RANK_VAL['K']) return true;
+
+  // If this is a late trick (trickNumber >= 4), be more aggressive with trump
+  if(gs.trickNumber>=4) return true;
+
+  // Otherwise reveal trump if we have a strong trump (Ace or King of trump)
+  const strongTrump=myTrumpCards.filter(c=>RANK_VAL[c.rank]>=RANK_VAL['K']);
+  return strongTrump.length>0;
+}
+
 function botPlayCard(gs, pos, difficulty){
   const hand=gs.hands[pos];
   const valid=validCards(gs,pos,hand);
@@ -202,7 +252,7 @@ function botPlayCard(gs, pos, difficulty){
     const nonTrump=valid.filter(c=>!tRev||c.suit!==trump);
     if(nonTrump.length) return nonTrump.sort((a,b)=>RANK_VAL[a.rank]-RANK_VAL[b.rank])[0];
   }else{
-    // Try to trump if possible
+    // Try to trump if possible (trump already revealed)
     const trumpCards=tRev?valid.filter(c=>c.suit===trump):[];
     if(trumpCards.length) return trumpCards.sort((a,b)=>RANK_VAL[a.rank]-RANK_VAL[b.rank])[0];
   }
@@ -294,10 +344,44 @@ function handleBotPowerCard(room, pos, card){
   advanceCalling(room);
 }
 
+function handleBotRevealTrump(room, pos){
+  const gs=room.gameState;
+  if(!canReveal(gs, pos, gs.hands[pos])) return false;
+
+  const revealedCard = gs.powerCard.card;
+  const bidderPos    = gs.powerCard.position;
+  gs.trumpRevealed   = true;
+  gs.trumpSuit       = revealedCard.suit;
+  gs.hands[bidderPos].push(revealedCard);
+  gs.hands[bidderPos] = sortHand(gs.hands[bidderPos]);
+  gs.powerCard = null;
+
+  io.to(room.code).emit('trumpRevealed',{
+    trumpSuit:     gs.trumpSuit,
+    powerCard:     revealedCard,
+    revealedByPos: pos,
+    revealedByName:nm(room,pos),
+    bidderPos,
+  });
+  const bs = sk(room, bidderPos);
+  if(bs) bs.emit('handUpdate',{ hand:gs.hands[bidderPos] });
+  return true;
+}
+
 function handleBotPlay(room, pos, card){
   const gs=room.gameState;
   if(!gs||gs.phase!=='playing'||gs.currentPlayer!==pos) return;
   const hand=gs.hands[pos];
+
+  // Check if bot should reveal trump before playing
+  const bot=room.players.find(p=>p.position===pos);
+  const diff=bot?.difficulty||'medium';
+  if(botShouldRevealTrump(gs, pos, diff)){
+    handleBotRevealTrump(room, pos);
+    // After reveal, recalculate card to play (now trump is available)
+    card = botPlayCard(gs, pos, diff);
+  }
+
   const idx=hand.findIndex(c=>c.id===card.id);
   if(idx===-1){
     // Fallback: first valid
