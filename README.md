@@ -90,7 +90,7 @@ After calling, each player receives **4 more cards at a time** until everyone ho
 | Success (tricks ≥ bid) | +bid | 0 |
 | Failure (tricks < bid) | −bid | +(opponent tricks − 5) |
 
-The game ends when one team reaches the **match target** (30 or 50 points).
+The game ends when one team reaches the **match target** (32, 52 or 72 points).
 
 ---
 
